@@ -7,8 +7,10 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from app.core.security import decode_access_token
+from app.core.config import get_settings
 from app.database.connection import get_db
 from app.models.user import User
+from app.services.prometheus_service import PrometheusClient
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
@@ -34,3 +36,11 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+
+def get_prometheus_client() -> Generator[PrometheusClient, None, None]:
+    client = PrometheusClient(get_settings().prometheus_url)
+    try:
+        yield client
+    finally:
+        client.close()

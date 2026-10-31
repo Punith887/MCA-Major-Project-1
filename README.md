@@ -1,13 +1,13 @@
 # Development of an Intelligent AIOps Framework
 
 **Short name:** Intelligent AIOps Framework  
-**Phase:** 1 — application foundation
+**Phase:** 2 — local AIOps platform (in progress)
 
 ## Project overview
 
 This project is an academic prototype foundation for an AIOps platform. The planned system will bring infrastructure monitoring, log analysis, machine-learning anomaly and risk detection, Generative AI incident analysis, runbook retrieval, and carefully controlled operations into a single application.
 
-Phase 1 implements the web application, authentication, PostgreSQL schema, migrations, initial APIs, dashboard, and a local Docker Compose setup. It does **not** yet connect live monitoring, ML, an LLM, RAG, Kubernetes operations, GCP, or deployment automation.
+Phase 1 established the web application, authentication, PostgreSQL schema, migrations, APIs, dashboard, and local Docker Compose setup. Phase 2 is extending this foundation incrementally. The current Phase 2 increments add Prometheus application metrics, a provisioned local Grafana dashboard, and an API pipeline that reads Prometheus samples, scores them with Isolation Forest, and persists detected anomalies with linked incidents. Host/container telemetry, log collection, predictive analytics, RAG, GenAI, and Kubernetes operations are not yet implemented. GCP deployment is intentionally deferred to Phase 3 and is not required.
 
 ## Problem statement
 
@@ -24,7 +24,7 @@ Infrastructure data and operational incidents can require engineers to correlate
 
 ## Technology stack
 
-| Area | Phase 1 |
+| Area | Foundation |
 |---|---|
 | Frontend | React, TypeScript, Vite, Tailwind CSS, React Router, Axios, Recharts, Lucide React |
 | Backend | Python 3.13, FastAPI, Pydantic, SQLAlchemy, Alembic |
@@ -43,19 +43,20 @@ flowchart LR
   API --> Services[Application services]
   Services --> DB[(PostgreSQL)]
   API --> Migration[Alembic migrations]
-  Monitoring[Prometheus and Grafana - future] -. not connected .-> API
+  Monitoring[Prometheus] -->|/metrics scrape| API
+  Monitoring --> Grafana[Grafana local dashboards]
   ML[ML / GenAI / RAG - future] -. not implemented .-> Services
   Cluster[Kubernetes operations - future] -. not enabled .-> Services
 ```
 
-The backend is a modular monolith. Prometheus/Grafana, ML, GenAI, RAG, Kubernetes, and cloud services are future integration points, not functioning Phase 1 features.
+The backend is a modular monolith. Prometheus/Grafana application telemetry is available in Phase 2 when the local Compose services are running. Container/host telemetry, ML, GenAI, RAG, Kubernetes, and cloud services remain separate later increments. GCP deployment is intentionally deferred to Phase 3.
 
 ## Folder structure
 
 ```text
 backend/
   app/
-    api/routes/       # Health, authentication, dashboard, list, and admin endpoints
+    api/routes/       # Health, authentication, dashboard, monitoring, anomaly, and admin endpoints
     core/             # Settings, JWT/password security, and role permissions
     database/         # SQLAlchemy base, engine, and session dependency
     models/           # User, project, resource, incident, deployment, audit records
@@ -70,8 +71,8 @@ frontend/
     pages/            # Login, registration, dashboard, feature placeholders
     services/         # API client and typed endpoint access
     tests/            # Frontend validation tests
-ai_engine/            # Reserved for later ML, RAG, GenAI, and agent work
-monitoring/           # Reserved for Prometheus/Grafana configuration
+ai_engine/            # Isolation Forest anomaly detection; future RAG, GenAI, and agent work
+monitoring/           # Prometheus scraping and Grafana provisioning
 deployment/           # Future Kubernetes and Terraform deployment work
 docs/                 # Phase scope and project notes
 ```
@@ -98,7 +99,8 @@ Run these commands from the repository root in PowerShell.
    ```powershell
    $dbPassword = python -c "import secrets; print(secrets.token_urlsafe(24))"
    $secret = python -c "import secrets; print(secrets.token_urlsafe(48))"
-   (Get-Content .env) -replace '^POSTGRES_PASSWORD=.*$', "POSTGRES_PASSWORD=$dbPassword" -replace '^SECRET_KEY=.*$', "SECRET_KEY=$secret" | Set-Content .env
+   $grafanaPassword = python -c "import secrets; print(secrets.token_urlsafe(32))"
+   (Get-Content .env) -replace '^POSTGRES_PASSWORD=.*$', "POSTGRES_PASSWORD=$dbPassword" -replace '^SECRET_KEY=.*$', "SECRET_KEY=$secret" -replace '^GRAFANA_ADMIN_PASSWORD=.*$', "GRAFANA_ADMIN_PASSWORD=$grafanaPassword" | Set-Content .env
    ```
 
    `.env` contains local secrets and is ignored by Git. Do not copy these development values into a production environment.
@@ -115,10 +117,18 @@ Compose builds the backend and frontend, waits for PostgreSQL, runs Alembic migr
 
 - Frontend: <http://localhost:5173>
 - API health: <http://localhost:8000/api/health>
+- Prometheus metrics: <http://localhost:8000/metrics>
+- Prometheus: <http://localhost:9090>
+- Prometheus scrape targets: <http://localhost:9090/targets>
+- Grafana: <http://localhost:3000> (credentials are in the local `.env`)
+- Grafana dashboard: <http://localhost:3000/d/aiops-infrastructure/aiops-infrastructure>
 - Swagger UI: <http://localhost:8000/docs>
 - ReDoc: <http://localhost:8000/redoc>
 
 PostgreSQL has no host-published port; only application containers can reach it on the private Compose network.
+Prometheus and Grafana are bound to loopback. The configured Grafana dashboard
+shows backend process and HTTP metrics only; it does not yet show host or
+container resource usage.
 
 Stop the services and retain database data:
 
@@ -140,6 +150,8 @@ Check service status and logs:
 docker compose ps
 docker compose logs backend
 docker compose logs postgres
+docker compose logs prometheus
+docker compose logs grafana
 ```
 
 ## Local development without Docker
@@ -190,7 +202,7 @@ alembic upgrade head
 alembic current
 ```
 
-Expected current revision: `20261030_0001`. To create a later migration after changing models:
+The initial Phase 1 revision is `20261030_0001`; the current Phase 2 schema revision is `20261031_0002`. To create a later migration after changing models:
 
 ```powershell
 alembic revision --autogenerate -m "describe the schema change"
@@ -230,12 +242,18 @@ For Swagger authorization, use the OAuth2 password form with the account email a
 | Method | Endpoint | Access | Behavior |
 |---|---|---|---|
 | `GET` | `/api/health` | Public | Checks API and database connectivity; unavailable DB returns `503` |
+| `GET` | `/metrics` | Public, Prometheus scrape | Exposes FastAPI HTTP and Python process metrics in Prometheus text format |
 | `POST` | `/api/auth/register` | Public | Creates a Viewer account |
 | `POST` | `/api/auth/login` | Public | Validates credentials and returns a JWT |
 | `GET` | `/api/auth/me` | Authenticated | Returns the current account |
 | `GET` | `/api/dashboard/overview` | Authenticated | Counts stored records; telemetry status is `false` |
-| `GET` | `/api/monitoring/resources` | Authenticated | Returns stored resources or an empty list |
-| `GET` | `/api/incidents` | Authenticated | Returns stored incidents or an empty list |
+| `GET` | `/api/projects` | Authenticated | Lists projects owned by the current user |
+| `POST` | `/api/projects` | Authenticated | Creates a local project and records the creation in the audit table |
+| `GET` | `/api/monitoring/resources` | Authenticated | Lists the current user's registered Prometheus resources |
+| `POST` | `/api/monitoring/resources` | Authenticated | Registers a resource only when its Prometheus job has a healthy target |
+| `GET` | `/api/anomalies` | Authenticated | Lists persisted anomalies for the current user's projects |
+| `POST` | `/api/anomalies/detect` | Authenticated | Runs Isolation Forest on Prometheus samples and creates linked incidents for newly detected anomalies |
+| `GET` | `/api/incidents` | Authenticated | Returns incidents for projects owned by the current user |
 | `GET` | `/api/deployments` | Authenticated | Returns stored deployments or an empty list |
 | `GET` | `/api/admin/users` | Admin | Lists users; other roles receive `403` |
 
@@ -253,7 +271,7 @@ The initial migration creates:
 - `audit_logs`
 - `alembic_version` (migration bookkeeping)
 
-Foreign keys, unique email constraint, status/severity enums, and lookup indexes are included in the schema. Prometheus is reserved for future high-volume time-series metrics; PostgreSQL holds application records in this phase.
+Foreign keys, unique email constraint, status/severity enums, and lookup indexes are included in the schema. Prometheus stores high-volume scraped metrics; PostgreSQL holds application records.
 
 ## Testing and build checks
 
@@ -263,7 +281,7 @@ From the repository root, with the Python virtual environment active:
 pytest
 ```
 
-This runs backend tests using an isolated in-memory SQLite database. It covers the API health/database check, registration, duplicate registration, login, bad credentials, JWT-protected routes, role checks, and empty dashboard state.
+This runs backend tests using an isolated in-memory SQLite database. It covers the API health/database check, authentication and role checks, Prometheus query handling, Isolation Forest behavior, and the anomaly-to-incident API workflow. The end-to-end API fixture uses clearly test-only synthetic Prometheus samples; it is not evidence of live monitoring behavior.
 
 From `frontend`:
 
@@ -275,7 +293,7 @@ npm run build
 
 The frontend test suite covers registration form validation. The build performs TypeScript checking before bundling.
 
-## Phase 1 feature status
+## Phase 1 foundation status
 
 ### Implemented
 
@@ -285,26 +303,30 @@ The frontend test suite covers registration form validation. The build performs 
 - Argon2id password hashing and expiring JWT access tokens.
 - Viewer-only self-registration and Admin-only user listing.
 - SQLAlchemy models, PostgreSQL connection configuration, Alembic initial migration.
-- Health, auth, dashboard, monitoring-resource, incidents, deployments, and admin APIs.
+- Health, auth, dashboard, monitoring-resource, anomaly, incident, deployment, and admin APIs.
 - Database-backed empty-state dashboard summaries.
 - Explicitly labelled illustrative CPU/memory chart data.
-- Dockerfiles and Compose stack with database health checks, private PostgreSQL network, persistent volume, and migration-on-start.
+- Dockerfiles and Compose stack with database health checks, private PostgreSQL network, persistent volumes, and migration-on-start.
 - Backend and frontend automated tests.
 
-### Not implemented (later phases)
+## Phase 2 status
 
-- Live Prometheus/Grafana monitoring and log ingestion.
-- ML anomaly detection or predictive analytics.
-- LLM analysis, RAG ingestion/retrieval, or AI operations agent.
-- Recovery actions, Kubernetes deployment, GCP, Terraform, or production secrets management.
-- Admin role-management UI and general CRUD workflows.
+- Prometheus scrapes FastAPI metrics at `/metrics`, including HTTP request counts/latency and Python process CPU/memory metrics.
+- Grafana provisions a local Prometheus data source and an Infrastructure Overview dashboard.
+- Authenticated users can create local projects, associate a project resource with a healthy Prometheus job, and trigger an Isolation Forest analysis of observed samples.
+- Newly detected samples are persisted as anomalies and linked medium-severity incidents. Duplicate detections at the same resource/timestamp do not create duplicate incidents.
+- The anomaly score is the negated Isolation Forest decision function, not a probability. This detector labels observed samples; it is not a future-risk predictor.
+- The current job exposes backend process/application metrics only. Host/container CPU, memory, disk, and network metrics, log ingestion, predictive analytics, RAG, GenAI, and controlled Kubernetes operations are not yet implemented.
+- Unit/API tests use test-only synthetic samples; live operation requires real Prometheus history and is not demonstrated by those fixtures.
+- Prometheus and Grafana are local Compose services, persist their data, and bind their web interfaces to loopback.
+- GCP deployment is intentionally deferred to Phase 3; no GCP account, billing, or credentials are required.
 
 ## Roadmap
 
 1. Verify the applicable VTU scheme and department report requirements.
-2. Add local demo telemetry and monitoring integration.
-3. Implement incident and log workflows.
+2. Extend local monitoring to containers and application health.
+3. Add log collection and incident workflows.
 4. Define labelled time-series data and evaluate anomaly/risk models.
 5. Add evidence-grounded LLM analysis and runbook retrieval.
 6. Add approval-gated test-environment actions and audit verification.
-7. Add optional Kubernetes/GCP deployment after local testing and cost review.
+7. Implement GCP deployment only in Phase 3 after local testing and cost review.

@@ -13,7 +13,15 @@ from sqlalchemy.pool import StaticPool
 from app.database.base import Base
 from app.database.connection import get_db
 from app.main import app
-from app.models import AuditLog, Deployment, Incident, InfrastructureResource, Project, User
+from app.models import (
+    Anomaly,
+    AuditLog,
+    Deployment,
+    Incident,
+    InfrastructureResource,
+    Project,
+    User,
+)
 
 test_engine = create_engine(
     "sqlite://",

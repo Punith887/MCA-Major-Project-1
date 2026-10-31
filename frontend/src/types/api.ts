@@ -35,7 +35,9 @@ export interface DashboardOverview {
 
 export interface IncidentRecord {
   id: string;
+  project_id: string;
   title: string;
+  description: string | null;
   severity: "low" | "medium" | "high" | "critical";
   status: "open" | "acknowledged" | "resolved";
   detected_at: string;

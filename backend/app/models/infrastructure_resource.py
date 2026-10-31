@@ -28,6 +28,7 @@ class InfrastructureResource(Base):
     )
     resource_name: Mapped[str] = mapped_column(String(160), nullable=False)
     resource_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    prometheus_job: Mapped[str | None] = mapped_column(String(120))
     environment: Mapped[str] = mapped_column(String(40), default="demo", nullable=False)
     status: Mapped[ResourceStatus] = mapped_column(
         Enum(ResourceStatus, name="resource_status"),

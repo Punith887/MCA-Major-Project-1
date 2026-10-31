@@ -63,7 +63,7 @@ export function AppLayout() {
           </div>
           <div className="flex items-center gap-3">
             <span className="hidden rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-600 sm:inline-flex">
-              Demo environment
+              Local environment
             </span>
             <span className="hidden text-xs text-slate-400 lg:inline">
               {new Intl.DateTimeFormat(undefined, {

@@ -40,11 +40,7 @@ export default function Dashboard() {
         <div>
           <p className="text-xs font-medium uppercase tracking-[0.12em] text-brand">Operations overview</p>
           <h2 className="mt-1.5 text-2xl font-semibold tracking-tight text-ink">Good to see you</h2>
-          <p className="mt-1 text-sm text-slate-500">A clear view of your demo environment and platform status.</p>
-        </div>
-        <div className="inline-flex w-fit items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
-          <span className="h-2 w-2 rounded-full bg-amber-500" />
-          Monitoring not connected
+          <p className="mt-1 text-sm text-slate-500">A clear view of your local environment and stored platform records.</p>
         </div>
       </section>
 

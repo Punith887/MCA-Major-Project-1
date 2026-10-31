@@ -1,5 +1,15 @@
+from datetime import datetime, timedelta, timezone
+
 from app.models.user import User, UserRole
 from app.core.security import hash_password
+from app.api.dependencies import get_prometheus_client
+from app.main import app
+from app.models.audit_log import AuditLog
+from app.models.anomaly import Anomaly
+from app.models.incident import Incident, IncidentSeverity
+from app.models.infrastructure_resource import InfrastructureResource
+from app.models.project import Project
+from ai_engine.anomaly_detector import MetricObservation
 from conftest import TestingSessionLocal
 
 
@@ -21,10 +31,63 @@ def login(client, email="student@example.com", password="StrongPassword123"):
     )
 
 
+class SyntheticPrometheusClient:
+    def __init__(self, *, active_jobs=None, observations=None):
+        self._active_jobs = active_jobs or {"aiops-backend"}
+        self._observations = observations or []
+
+    def active_jobs(self):
+        return self._active_jobs
+
+    def query_range(self, job, *, lookback_minutes):
+        assert job == "aiops-backend"
+        assert lookback_minutes > 0
+        return self._observations
+
+    def close(self):
+        pass
+
+
+def synthetic_observations():
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    observations = [
+        MetricObservation(
+            timestamp=start + timedelta(minutes=index),
+            features={
+                "cpu_cores": 0.05 + (index % 7) * 0.002,
+                "memory_bytes": 100_000_000 + (index % 5) * 100_000,
+                "request_rate": 1.0 + (index % 3) * 0.05,
+                "error_rate": 0.0,
+            },
+        )
+        for index in range(80)
+    ]
+    observations[-1] = MetricObservation(
+        timestamp=observations[-1].timestamp,
+        features={
+            "cpu_cores": 8.0,
+            "memory_bytes": 8_000_000_000,
+            "request_rate": 80.0,
+            "error_rate": 12.0,
+        },
+    )
+    return observations
+
+
 def test_health_endpoint_checks_database(client):
     response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "database": "connected"}
+
+
+def test_prometheus_metrics_endpoint_exposes_http_metrics(client):
+    client.get("/api/health")
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "http_requests_total" in response.text
+    assert 'handler="/api/health"' in response.text
 
 
 def test_registration_stores_hashed_password_and_defaults_to_viewer(client):
@@ -66,6 +129,8 @@ def test_protected_endpoints_require_authentication(client):
         "/api/auth/me",
         "/api/dashboard/overview",
         "/api/monitoring/resources",
+        "/api/projects",
+        "/api/anomalies",
         "/api/incidents",
         "/api/deployments",
         "/api/admin/users",
@@ -124,3 +189,151 @@ def test_dashboard_reports_empty_database_state(client):
     assert response.json()["monitoring_connected"] is False
     assert response.json()["total_monitored_resources"] == 0
     assert response.json()["recent_activity"][0]["action"] == "user_registered"
+
+
+def test_dashboard_only_includes_data_owned_by_current_user(client):
+    register(client)
+    token = login(client).json()["access_token"]
+    with TestingSessionLocal() as db:
+        other_user = User(
+            full_name="Other User",
+            email="other@example.com",
+            hashed_password=hash_password("OtherPassword123"),
+            role=UserRole.VIEWER,
+        )
+        db.add(other_user)
+        db.flush()
+        project = Project(name="Other user's project", owner_id=other_user.id)
+        db.add(project)
+        db.flush()
+        resource = InfrastructureResource(
+            project_id=project.id,
+            resource_name="other-resource",
+            resource_type="prometheus_job",
+        )
+        incident = Incident(
+            project_id=project.id,
+            title="Other user's incident",
+            severity=IncidentSeverity.HIGH,
+        )
+        db.add_all(
+            [
+                resource,
+                incident,
+                AuditLog(
+                    user_id=other_user.id,
+                    action="other_user_action",
+                    resource_type="project",
+                ),
+            ]
+        )
+        db.commit()
+
+    response = client.get(
+        "/api/dashboard/overview",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total_monitored_resources"] == 0
+    assert response.json()["open_incidents"] == 0
+    assert [entry["action"] for entry in response.json()["recent_activity"]] == [
+        "user_registered"
+    ]
+
+
+def test_prometheus_anomaly_detection_creates_incidents_idempotently(client):
+    registration = register(client)
+    assert registration.status_code == 201
+    token = login(client).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    app.dependency_overrides[get_prometheus_client] = lambda: SyntheticPrometheusClient(
+        observations=synthetic_observations()
+    )
+
+    project_response = client.post(
+        "/api/projects",
+        json={"name": "Local AIOps test", "description": "Synthetic API test fixture"},
+        headers=headers,
+    )
+    assert project_response.status_code == 201
+    project_id = project_response.json()["id"]
+    assert project_response.json()["environment"] == "local"
+
+    resource_response = client.post(
+        "/api/monitoring/resources",
+        json={"project_id": project_id, "prometheus_job": "aiops-backend"},
+        headers=headers,
+    )
+    assert resource_response.status_code == 201
+    resource_id = resource_response.json()["id"]
+
+    detection_response = client.post(
+        "/api/anomalies/detect",
+        json={"resource_id": resource_id},
+        headers=headers,
+    )
+    assert detection_response.status_code == 200
+    result = detection_response.json()
+    assert result["sample_count"] == 80
+    assert result["anomaly_count"] >= 1
+    assert result["incidents_created"] == result["anomaly_count"]
+    assert all(item["incident_id"] for item in result["anomalies"])
+    assert all(item["resource"] == "aiops-backend" for item in result["anomalies"])
+
+    repeated_response = client.post(
+        "/api/anomalies/detect",
+        json={"resource_id": resource_id},
+        headers=headers,
+    )
+    assert repeated_response.status_code == 200
+    assert repeated_response.json()["anomaly_count"] == 0
+
+    incidents_response = client.get("/api/incidents", headers=headers)
+    assert incidents_response.status_code == 200
+    assert len(incidents_response.json()) == result["incidents_created"]
+    with TestingSessionLocal() as db:
+        assert db.query(Anomaly).count() == result["anomaly_count"]
+        assert db.query(Incident).count() == result["incidents_created"]
+        assert (
+            db.query(AuditLog)
+            .filter_by(action="anomaly_detection_completed")
+            .count()
+            == 2
+        )
+
+
+def test_monitoring_resource_registration_rejects_unhealthy_job(client):
+    register(client)
+    token = login(client).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    app.dependency_overrides[get_prometheus_client] = lambda: SyntheticPrometheusClient(
+        active_jobs={"prometheus"}
+    )
+    project = client.post(
+        "/api/projects",
+        json={"name": "Local project"},
+        headers=headers,
+    ).json()
+
+    response = client.post(
+        "/api/monitoring/resources",
+        json={"project_id": project["id"], "prometheus_job": "aiops-backend"},
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "The Prometheus job has no active, healthy target."
+
+
+def test_anomaly_detection_requires_owned_registered_resource(client):
+    register(client)
+    token = login(client).json()["access_token"]
+    response = client.post(
+        "/api/anomalies/detect",
+        json={"resource_id": "00000000-0000-0000-0000-000000000001"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Monitoring resource not found."

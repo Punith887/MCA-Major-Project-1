@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./aiops_dev.db"
     secret_key: SecretStr = SecretStr("")
     access_token_expire_minutes: int = Field(default=30, ge=1, le=1440)
+    prometheus_url: str = "http://localhost:9090"
+    anomaly_lookback_minutes: int = Field(default=60, ge=15, le=1440)
+    anomaly_minimum_samples: int = Field(default=30, ge=10, le=10000)
+    anomaly_contamination: float = Field(default=0.05, gt=0, lt=0.5)
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:5173"]
     )
