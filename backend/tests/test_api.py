@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.models.user import User, UserRole
 from app.core.security import hash_password
 from app.api.dependencies import get_prometheus_client
@@ -9,6 +11,12 @@ from app.models.anomaly import Anomaly
 from app.models.incident import Incident, IncidentSeverity
 from app.models.infrastructure_resource import InfrastructureResource
 from app.models.project import Project
+from app.services.prometheus_service import (
+    HostMetricObservation,
+    PrometheusError,
+    PrometheusMetricsMissingError,
+    PrometheusTargetUnavailableError,
+)
 from ai_engine.anomaly_detector import MetricObservation
 from conftest import TestingSessionLocal
 
@@ -32,12 +40,29 @@ def login(client, email="student@example.com", password="StrongPassword123"):
 
 
 class SyntheticPrometheusClient:
-    def __init__(self, *, active_jobs=None, observations=None):
+    def __init__(
+        self,
+        *,
+        active_jobs=None,
+        observations=None,
+        host_observations=None,
+        host_error=None,
+    ):
         self._active_jobs = active_jobs or {"aiops-backend"}
         self._observations = observations or []
+        self._host_observations = host_observations or []
+        self._host_error = host_error
 
     def active_jobs(self):
         return self._active_jobs
+
+    def query_host_metrics(self, job, *, lookback_minutes, step_seconds):
+        assert job == "windows-exporter"
+        assert lookback_minutes >= 5
+        assert step_seconds >= 15
+        if self._host_error is not None:
+            raise self._host_error
+        return self._host_observations
 
     def query_range(self, job, *, lookback_minutes):
         assert job == "aiops-backend"
@@ -128,6 +153,7 @@ def test_protected_endpoints_require_authentication(client):
     for path in (
         "/api/auth/me",
         "/api/dashboard/overview",
+        "/api/monitoring/host-metrics",
         "/api/monitoring/resources",
         "/api/projects",
         "/api/anomalies",
@@ -136,6 +162,95 @@ def test_protected_endpoints_require_authentication(client):
         "/api/admin/users",
     ):
         assert client.get(path).status_code == 401
+
+
+def test_host_metrics_returns_authenticated_timestamped_windows_samples(client):
+    register(client)
+    token = login(client).json()["access_token"]
+    app.dependency_overrides[get_prometheus_client] = lambda: SyntheticPrometheusClient(
+        host_observations=[
+            HostMetricObservation(
+                timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                cpu_percent=42.5,
+                memory_percent=61.25,
+            )
+        ]
+    )
+
+    response = client.get(
+        "/api/monitoring/host-metrics?lookback_minutes=30&step_seconds=30",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["job"] == "windows-exporter"
+    assert result["lookback_minutes"] == 30
+    assert result["step_seconds"] == 30
+    assert result["samples"] == [
+        {
+            "timestamp": "2026-01-01T00:00:00Z",
+            "cpu_percent": 42.5,
+            "memory_percent": 61.25,
+        }
+    ]
+    assert result["queried_at"]
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_detail"),
+    [
+        (
+            PrometheusTargetUnavailableError("Windows Exporter job is not UP."),
+            "Windows Exporter job is not UP.",
+        ),
+        (
+            PrometheusMetricsMissingError("Windows metrics are missing."),
+            "Windows metrics are missing.",
+        ),
+        (PrometheusError("connection refused"), "Prometheus is unavailable."),
+    ],
+)
+def test_host_metrics_maps_prometheus_failures_to_service_unavailable(
+    client,
+    error,
+    expected_detail,
+):
+    register(client)
+    token = login(client).json()["access_token"]
+    app.dependency_overrides[get_prometheus_client] = lambda: SyntheticPrometheusClient(
+        host_error=error
+    )
+
+    response = client.get(
+        "/api/monitoring/host-metrics",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == expected_detail
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "?lookback_minutes=4",
+        "?lookback_minutes=1441",
+        "?step_seconds=14",
+        "?step_seconds=301",
+        "?lookback_minutes=1440&step_seconds=15",
+    ],
+)
+def test_host_metrics_rejects_out_of_range_query_parameters(client, query):
+    register(client)
+    token = login(client).json()["access_token"]
+
+    response = client.get(
+        f"/api/monitoring/host-metrics{query}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
 
 
 def test_viewer_cannot_access_admin_user_list(client):

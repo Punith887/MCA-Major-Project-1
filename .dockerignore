@@ -1,0 +1,17 @@
+.env
+.env.*
+.git
+.venv
+venv
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/*.db
+.pytest_cache
+**/.pytest_cache
+**/node_modules
+**/dist
+**/coverage
+**/*.egg-info
+*.log

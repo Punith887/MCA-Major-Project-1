@@ -1,8 +1,23 @@
-import type { DashboardOverview, DeploymentRecord, IncidentRecord } from "../types/api";
+import type {
+  DashboardOverview,
+  DeploymentRecord,
+  HostMetricsResponse,
+  IncidentRecord,
+} from "../types/api";
 import { api } from "./api";
 
 export async function getDashboardOverview(): Promise<DashboardOverview> {
   const response = await api.get<DashboardOverview>("/dashboard/overview");
+  return response.data;
+}
+
+export async function getWindowsHostMetrics(
+  signal?: AbortSignal,
+): Promise<HostMetricsResponse> {
+  const response = await api.get<HostMetricsResponse>("/monitoring/host-metrics", {
+    params: { lookback_minutes: 60, step_seconds: 15 },
+    signal,
+  });
   return response.data;
 }
 

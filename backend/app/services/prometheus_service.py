@@ -1,4 +1,5 @@
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import math
 import time
@@ -10,6 +11,21 @@ from ai_engine.anomaly_detector import MetricObservation
 
 class PrometheusError(RuntimeError):
     """Raised when Prometheus cannot supply the requested data."""
+
+
+class PrometheusTargetUnavailableError(PrometheusError):
+    """Raised when a requested Prometheus target is not healthy."""
+
+
+class PrometheusMetricsMissingError(PrometheusError):
+    """Raised when Prometheus has no usable samples for requested metrics."""
+
+
+@dataclass(frozen=True)
+class HostMetricObservation:
+    timestamp: datetime
+    cpu_percent: float
+    memory_percent: float
 
 
 class PrometheusClient:
@@ -43,6 +59,87 @@ class PrometheusClient:
     def require_active_job(self, job: str) -> None:
         if job not in self.active_jobs():
             raise PrometheusError(f"Prometheus job '{job}' has no active, healthy target.")
+
+    def query_host_metrics(
+        self,
+        job: str = "windows-exporter",
+        *,
+        lookback_minutes: int = 60,
+        step_seconds: int = 15,
+    ) -> list[HostMetricObservation]:
+        targets = self._get_json("/api/v1/targets", {"state": "active"})
+        active_targets = targets.get("data", {}).get("activeTargets", [])
+        job_targets = [
+            target
+            for target in active_targets
+            if target.get("labels", {}).get("job") == job
+        ]
+        if not job_targets or not any(
+            target.get("health") == "up" for target in job_targets
+        ):
+            raise PrometheusTargetUnavailableError(
+                f"Windows Exporter Prometheus job '{job}' is not UP."
+            )
+
+        now = time.time()
+        start = now - lookback_minutes * 60
+        job_matcher = self._quote_label_value(job)
+        expressions = {
+            "cpu_percent": (
+                "100 * (1 - avg by (instance) "
+                "(rate(windows_cpu_time_seconds_total"
+                f'{{job="{job_matcher}",mode="idle"}}[5m])))'
+            ),
+            "memory_percent": (
+                "100 * (1 - windows_memory_physical_free_bytes"
+                f'{{job="{job_matcher}"}} / windows_memory_physical_total_bytes'
+                f'{{job="{job_matcher}"}})'
+            ),
+        }
+        metric_values = {
+            metric: self._range_query(
+                expression,
+                start=start,
+                end=now,
+                step_seconds=step_seconds,
+            )
+            for metric, expression in expressions.items()
+        }
+        valid_values = {
+            metric: {
+                timestamp: value
+                for timestamp, value in values.items()
+                if 0 <= value <= 100
+            }
+            for metric, values in metric_values.items()
+        }
+        timestamps = set.intersection(
+            *(set(values) for values in valid_values.values())
+        )
+        if not timestamps:
+            missing = [
+                metric
+                for metric, values in valid_values.items()
+                if not values
+            ]
+            if missing:
+                raise PrometheusMetricsMissingError(
+                    "Prometheus returned no usable Windows "
+                    f"{' and '.join(missing)} samples for job '{job}'."
+                )
+            raise PrometheusMetricsMissingError(
+                "Prometheus returned no timestamp with complete Windows CPU and "
+                f"memory samples for job '{job}'."
+            )
+
+        return [
+            HostMetricObservation(
+                timestamp=datetime.fromtimestamp(timestamp, timezone.utc),
+                cpu_percent=valid_values["cpu_percent"][timestamp],
+                memory_percent=valid_values["memory_percent"][timestamp],
+            )
+            for timestamp in sorted(timestamps)
+        ]
 
     def query_range(
         self,

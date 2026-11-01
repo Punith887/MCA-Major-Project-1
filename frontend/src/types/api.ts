@@ -33,6 +33,20 @@ export interface DashboardOverview {
   recent_activity: ActivityItem[];
 }
 
+export interface HostMetricSample {
+  timestamp: string;
+  cpu_percent: number;
+  memory_percent: number;
+}
+
+export interface HostMetricsResponse {
+  job: "windows-exporter";
+  lookback_minutes: number;
+  step_seconds: number;
+  queried_at: string;
+  samples: HostMetricSample[];
+}
+
 export interface IncidentRecord {
   id: string;
   project_id: string;

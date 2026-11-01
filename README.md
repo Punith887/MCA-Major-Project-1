@@ -113,7 +113,7 @@ From the repository root:
 docker compose up --build
 ```
 
-Compose builds the backend and frontend, waits for PostgreSQL, runs Alembic migrations before starting the API, and waits for API health before starting Vite.
+Compose builds the backend and frontend, waits for PostgreSQL, runs Alembic migrations before starting the API, and waits for API health before starting Vite. The backend image build uses the repository root as its context so it can include the existing `ai_engine` package required by the Prometheus anomaly service; `.dockerignore` excludes local secrets and development data from that context.
 
 - Frontend: <http://localhost:5173>
 - API health: <http://localhost:8000/api/health>

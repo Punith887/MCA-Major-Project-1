@@ -9,18 +9,31 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { DemoMetricChart } from "../components/dashboard/DemoMetricChart";
+import { HostMetricChart } from "../components/dashboard/DemoMetricChart";
 import { HealthOverview } from "../components/dashboard/HealthOverview";
 import { MetricCard } from "../components/dashboard/MetricCard";
 import { getApiErrorMessage } from "../services/api";
-import { getDashboardOverview, getRecentDeployments, getRecentIncidents } from "../services/dashboard";
-import type { DashboardOverview, DeploymentRecord, IncidentRecord } from "../types/api";
+import {
+  getDashboardOverview,
+  getRecentDeployments,
+  getRecentIncidents,
+  getWindowsHostMetrics,
+} from "../services/dashboard";
+import type {
+  DashboardOverview,
+  DeploymentRecord,
+  HostMetricsResponse,
+  IncidentRecord,
+} from "../types/api";
 
 export default function Dashboard() {
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
   const [deployments, setDeployments] = useState<DeploymentRecord[]>([]);
   const [error, setError] = useState("");
+  const [hostMetrics, setHostMetrics] = useState<HostMetricsResponse | null>(null);
+  const [hostMetricsLoading, setHostMetricsLoading] = useState(true);
+  const [hostMetricsError, setHostMetricsError] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([getDashboardOverview(), getRecentIncidents(), getRecentDeployments()])
@@ -33,6 +46,47 @@ export default function Dashboard() {
         setError(getApiErrorMessage(requestError, "Dashboard data could not be loaded.")),
       );
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let disposed = false;
+    let timeoutId: ReturnType<typeof setTimeout>;
+
+    const loadHostMetrics = async () => {
+      try {
+        const result = await getWindowsHostMetrics(controller.signal);
+        if (disposed) return;
+        setHostMetrics(result);
+        setHostMetricsError(null);
+      } catch (requestError: unknown) {
+        if (disposed || controller.signal.aborted) return;
+        setHostMetrics(null);
+        setHostMetricsError(
+          getApiErrorMessage(requestError, "Windows host metrics could not be loaded."),
+        );
+      } finally {
+        if (!disposed) {
+          setHostMetricsLoading(false);
+          timeoutId = setTimeout(() => {
+            void loadHostMetrics();
+          }, 15_000);
+        }
+      }
+    };
+
+    void loadHostMetrics();
+    return () => {
+      disposed = true;
+      controller.abort();
+      clearTimeout(timeoutId);
+    };
+  }, []);
+
+  const hostMetricStatus = hostMetricsLoading
+    ? "loading"
+    : hostMetricsError
+      ? "error"
+      : "ready";
 
   return (
     <div className="space-y-6">
@@ -58,8 +112,20 @@ export default function Dashboard() {
           </section>
 
           <section className="grid gap-4 xl:grid-cols-2">
-            <DemoMetricChart metric="cpu" />
-            <DemoMetricChart metric="memory" />
+            <HostMetricChart
+              metric="cpu"
+              samples={hostMetrics?.samples ?? []}
+              status={hostMetricStatus}
+              error={hostMetricsError}
+              lastUpdated={hostMetrics?.queried_at ?? null}
+            />
+            <HostMetricChart
+              metric="memory"
+              samples={hostMetrics?.samples ?? []}
+              status={hostMetricStatus}
+              error={hostMetricsError}
+              lastUpdated={hostMetrics?.queried_at ?? null}
+            />
           </section>
 
           <section className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
@@ -108,7 +174,7 @@ export default function Dashboard() {
           </section>
           <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500">
             <span className="rounded bg-slate-100 p-1 text-slate-500"><ArrowUpRight size={13} /></span>
-            Summary cards reflect database records. Trend charts are illustrative demo data and are not live infrastructure measurements.
+            Summary cards reflect database records. Trend charts show live Windows host CPU and physical memory usage.
           </div>
         </>
       ) : null}

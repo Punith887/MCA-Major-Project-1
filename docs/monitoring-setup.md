@@ -7,11 +7,17 @@ at `/metrics`. Prometheus scrapes the backend and itself every 15 seconds.
 Grafana provisions Prometheus as its default data source and loads the
 `Infrastructure Overview` dashboard automatically.
 
-The current dashboard covers scrape availability, backend HTTP request rate,
-p95 response latency, and backend process CPU and memory. It does not represent
-Windows host or container CPU/memory/disk/network measurements. Those sources
-will be connected in later monitoring increments and must not be inferred from
-the current process metrics.
+Prometheus also scrapes the Windows Exporter at
+`host.docker.internal:9182` under the `windows-exporter` job. The authenticated
+`GET /api/monitoring/host-metrics` endpoint serves timestamped Windows host CPU
+and physical-memory percentages to the React dashboard; the dashboard refreshes
+these charts every 15 seconds. The browser only communicates with the backend,
+not Prometheus. Configure the dashboard login before checking the charts, and
+confirm the `windows-exporter` target is `UP` if live values are unavailable.
+
+Windows host disk usage is a future extension. Per-volume values need a
+deliberate volume-selection/display contract before they can be shown reliably.
+Do not infer host metrics from the separate backend process metrics.
 
 ## Start locally
 
@@ -75,7 +81,6 @@ Prometheus and Grafana data are persisted in named Compose volumes. Do not use
 
 ## Platform note
 
-The local developer machine is Windows. The standard Node Exporter exposes
-Linux host metrics and is not included as a misleading Windows host exporter.
-A Windows-compatible exporter can be evaluated when host-level metrics are
-added. GCP deployment is intentionally deferred to Phase 3.
+The Windows host exporter is external to Docker Compose; its scrape target is
+configured in `monitoring/prometheus/prometheus.yml`. GCP deployment is
+intentionally deferred to Phase 3.
