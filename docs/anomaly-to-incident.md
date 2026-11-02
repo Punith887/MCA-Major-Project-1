@@ -10,7 +10,7 @@ This increment adds an authenticated, project-scoped API workflow:
 3. Query recent CPU, memory, request-rate, and HTTP 5xx-rate samples from
    Prometheus.
 4. Score complete samples with scikit-learn Isolation Forest.
-5. Persist newly flagged observations and create linked medium-severity incidents.
+5. Persist newly flagged observations and link them to a resource-scoped incident.
 6. List the current user's persisted anomalies and incidents.
 
 The current Compose target, `aiops-backend`, exposes FastAPI process CPU and memory
@@ -47,9 +47,36 @@ Use an authenticated account and the OpenAPI page at <http://localhost:8000/docs
 
 The response reports the actual sample and anomaly counts. Zero anomalies is a
 valid result. Repeating detection against the same timestamped samples does not
-create duplicate anomaly or incident records. Each incident description includes
-the observed features and explicitly identifies the score as a decision-function
+create duplicate anomaly records. New anomalies for one resource reuse its OPEN
+or ACKNOWLEDGED incident; different resources remain isolated, and RESOLVED
+incidents are not reused. Each incident description includes observed features
+and explicitly identifies the Isolation Forest score as a decision-function
 score, not a probability.
+
+Incident severity is classified independently from the Isolation Forest score.
+The highest threshold crossed by any evidence sets severity:
+
+| Severity | Process CPU (cores) | Process memory (bytes) | HTTP 5xx rate (requests/second) |
+|---|---:|---:|---:|
+| LOW | Below 0.5 | Below 536,870,912 | Below 0.1 |
+| MEDIUM | 0.5 | 536,870,912 | 0.1 |
+| HIGH | 1.0 | 1,073,741,824 | 1.0 |
+| CRITICAL | 2.0 | 2,147,483,648 | 5.0 |
+
+These are initial absolute thresholds for the currently collected process and
+application metrics, not universal capacity limits. Configure them with
+`ANOMALY_SEVERITY_{MEDIUM,HIGH,CRITICAL}_{CPU_CORES,MEMORY_BYTES,ERROR_RATE}`.
+For example, `ANOMALY_SEVERITY_HIGH_CPU_CORES=1.5` changes the CPU HIGH
+threshold. The HTTP 5xx signal is a request rate, not a percentage; total request
+rate is retained as context and does not increase severity on its own. Thresholds
+must be positive and strictly increase from MEDIUM through CRITICAL.
+
+Detection persistence locks the resource row in the same database transaction
+before checking timestamps or reusing an incident. This serializes concurrent
+detection persistence for one resource on PostgreSQL's normal READ COMMITTED
+isolation level. The project test suite uses SQLite, which does not enforce
+`SELECT FOR UPDATE`; concurrent PostgreSQL behavior still requires integration
+testing against PostgreSQL before being treated as verified.
 
 All project, resource, anomaly, and incident reads are scoped to projects owned by
 the authenticated user. Creating a project also records a project-created audit
@@ -78,5 +105,6 @@ From the repository root, with the backend virtual environment active:
 pytest backend\tests\test_anomaly_detection.py backend\tests\test_prometheus_service.py backend\tests\test_api.py
 ```
 
-The tests use an isolated in-memory SQLite database. The additive Alembic
-migration is `20261031_0002`; do not rewrite the Phase 1 migration.
+The tests use an isolated in-memory SQLite database. The latest additive
+Alembic migration is `20261102_0003`; do not rewrite earlier migration files or
+apply this migration to a database without explicit approval.

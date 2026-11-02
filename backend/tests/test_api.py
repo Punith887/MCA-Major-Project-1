@@ -392,8 +392,9 @@ def test_prometheus_anomaly_detection_creates_incidents_idempotently(client):
     result = detection_response.json()
     assert result["sample_count"] == 80
     assert result["anomaly_count"] >= 1
-    assert result["incidents_created"] == result["anomaly_count"]
+    assert result["incidents_created"] == 1
     assert all(item["incident_id"] for item in result["anomalies"])
+    assert len({item["incident_id"] for item in result["anomalies"]}) == 1
     assert all(item["resource"] == "aiops-backend" for item in result["anomalies"])
 
     repeated_response = client.post(
@@ -406,9 +407,11 @@ def test_prometheus_anomaly_detection_creates_incidents_idempotently(client):
 
     incidents_response = client.get("/api/incidents", headers=headers)
     assert incidents_response.status_code == 200
-    assert len(incidents_response.json()) == result["incidents_created"]
+    assert len(incidents_response.json()) == 1
     with TestingSessionLocal() as db:
         assert db.query(Anomaly).count() == result["anomaly_count"]
+        incident = db.query(Incident).one()
+        assert incident.resource_id is not None
         assert db.query(Incident).count() == result["incidents_created"]
         assert (
             db.query(AuditLog)
@@ -416,6 +419,14 @@ def test_prometheus_anomaly_detection_creates_incidents_idempotently(client):
             .count()
             == 2
         )
+        audit_logs = (
+            db.query(AuditLog)
+            .filter_by(action="anomaly_detection_completed")
+            .order_by(AuditLog.id)
+            .all()
+        )
+        assert audit_logs[0].details["incidents_created"] == 1
+        assert audit_logs[1].details["incidents_created"] == 0
 
 
 def test_monitoring_resource_registration_rejects_unhealthy_job(client):

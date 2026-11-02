@@ -24,11 +24,18 @@ class IncidentStatus(str, enum.Enum):
 
 class Incident(Base):
     __tablename__ = "incidents"
-    __table_args__ = (Index("ix_incidents_status_detected_at", "status", "detected_at"),)
+    __table_args__ = (
+        Index("ix_incidents_status_detected_at", "status", "detected_at"),
+        Index("ix_incidents_resource_id_status", "resource_id", "status"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     project_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    resource_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("infrastructure_resources.id", ondelete="SET NULL"),
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
@@ -46,3 +53,6 @@ class Incident(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     project: Mapped["Project"] = relationship(back_populates="incidents")
+    resource: Mapped["InfrastructureResource | None"] = relationship(
+        back_populates="incidents"
+    )

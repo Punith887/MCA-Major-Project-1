@@ -202,7 +202,7 @@ alembic upgrade head
 alembic current
 ```
 
-The initial Phase 1 revision is `20261030_0001`; the current Phase 2 schema revision is `20261031_0002`. To create a later migration after changing models:
+The initial Phase 1 revision is `20261030_0001`; the latest schema revision is `20261102_0003`. To create a later migration after changing models:
 
 ```powershell
 alembic revision --autogenerate -m "describe the schema change"
@@ -252,7 +252,7 @@ For Swagger authorization, use the OAuth2 password form with the account email a
 | `GET` | `/api/monitoring/resources` | Authenticated | Lists the current user's registered Prometheus resources |
 | `POST` | `/api/monitoring/resources` | Authenticated | Registers a resource only when its Prometheus job has a healthy target |
 | `GET` | `/api/anomalies` | Authenticated | Lists persisted anomalies for the current user's projects |
-| `POST` | `/api/anomalies/detect` | Authenticated | Runs Isolation Forest on Prometheus samples and creates linked incidents for newly detected anomalies |
+| `POST` | `/api/anomalies/detect` | Authenticated | Runs Isolation Forest on Prometheus samples, persists newly detected anomalies, and links them to a resource-scoped incident |
 | `GET` | `/api/incidents` | Authenticated | Returns incidents for projects owned by the current user |
 | `GET` | `/api/deployments` | Authenticated | Returns stored deployments or an empty list |
 | `GET` | `/api/admin/users` | Admin | Lists users; other roles receive `403` |
@@ -314,7 +314,8 @@ The frontend test suite covers registration form validation. The build performs 
 - Prometheus scrapes FastAPI metrics at `/metrics`, including HTTP request counts/latency and Python process CPU/memory metrics.
 - Grafana provisions a local Prometheus data source and an Infrastructure Overview dashboard.
 - Authenticated users can create local projects, associate a project resource with a healthy Prometheus job, and trigger an Isolation Forest analysis of observed samples.
-- Newly detected samples are persisted as anomalies and linked medium-severity incidents. Duplicate detections at the same resource/timestamp do not create duplicate incidents.
+- Newly detected samples are persisted as anomalies and linked to a resource-scoped incident. OPEN and ACKNOWLEDGED incidents are reused for new anomalies on that resource; RESOLVED incidents are not reused. Duplicate detections at the same resource/timestamp do not create duplicate anomalies.
+- Incident severity is classified from configurable process CPU, process memory, and HTTP 5xx request-rate thresholds; Isolation Forest scores are not probabilities and do not determine severity. See [the anomaly-to-incident notes](docs/anomaly-to-incident.md) for defaults, environment variables, and concurrency limitations.
 - The anomaly score is the negated Isolation Forest decision function, not a probability. This detector labels observed samples; it is not a future-risk predictor.
 - The current job exposes backend process/application metrics only. Host/container CPU, memory, disk, and network metrics, log ingestion, predictive analytics, RAG, GenAI, and controlled Kubernetes operations are not yet implemented.
 - Unit/API tests use test-only synthetic samples; live operation requires real Prometheus history and is not demonstrated by those fixtures.

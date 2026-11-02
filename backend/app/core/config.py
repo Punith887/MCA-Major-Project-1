@@ -16,6 +16,23 @@ class Settings(BaseSettings):
     anomaly_lookback_minutes: int = Field(default=60, ge=15, le=1440)
     anomaly_minimum_samples: int = Field(default=30, ge=10, le=10000)
     anomaly_contamination: float = Field(default=0.05, gt=0, lt=0.5)
+    anomaly_severity_medium_cpu_cores: float = Field(default=0.5, gt=0, allow_inf_nan=False)
+    anomaly_severity_high_cpu_cores: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    anomaly_severity_critical_cpu_cores: float = Field(default=2.0, gt=0, allow_inf_nan=False)
+    anomaly_severity_medium_memory_bytes: float = Field(
+        default=536_870_912, gt=0, allow_inf_nan=False
+    )
+    anomaly_severity_high_memory_bytes: float = Field(
+        default=1_073_741_824, gt=0, allow_inf_nan=False
+    )
+    anomaly_severity_critical_memory_bytes: float = Field(
+        default=2_147_483_648, gt=0, allow_inf_nan=False
+    )
+    anomaly_severity_medium_error_rate: float = Field(
+        default=0.1, gt=0, allow_inf_nan=False
+    )
+    anomaly_severity_high_error_rate: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    anomaly_severity_critical_error_rate: float = Field(default=5.0, gt=0, allow_inf_nan=False)
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:5173"]
     )
@@ -36,6 +53,18 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_secret(self) -> "Settings":
+        for metric in ("cpu_cores", "memory_bytes", "error_rate"):
+            thresholds = (
+                getattr(self, f"anomaly_severity_medium_{metric}"),
+                getattr(self, f"anomaly_severity_high_{metric}"),
+                getattr(self, f"anomaly_severity_critical_{metric}"),
+            )
+            if not thresholds[0] < thresholds[1] < thresholds[2]:
+                raise ValueError(
+                    f"Anomaly severity thresholds for {metric} must increase "
+                    "from medium to critical."
+                )
+
         secret = self.secret_key.get_secret_value()
         if self.environment.lower() == "test" and not secret:
             self.secret_key = SecretStr("test-only-secret-key-not-for-production")

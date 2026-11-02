@@ -15,7 +15,10 @@ from app.schemas.anomaly import (
     AnomalyDetectionResult,
     AnomalyRead,
 )
-from app.services.anomaly_service import persist_anomalies
+from app.services.anomaly_service import (
+    MonitoredResourceUnavailableError,
+    persist_anomalies,
+)
 from app.services.prometheus_service import PrometheusClient, PrometheusError
 
 router = APIRouter(prefix="/anomalies", tags=["anomalies"])
@@ -103,12 +106,18 @@ def run_detection(
             detail=str(exc),
         ) from exc
 
-    created, incidents_created = persist_anomalies(
-        db,
-        user.id,
-        resource,
-        scored_observations,
-    )
+    try:
+        created, incidents_created = persist_anomalies(
+            db,
+            user.id,
+            resource,
+            scored_observations,
+        )
+    except MonitoredResourceUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
     return AnomalyDetectionResult(
         resource_id=resource.id,
         prometheus_job=resource.prometheus_job,

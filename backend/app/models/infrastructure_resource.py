@@ -46,3 +46,4 @@ class InfrastructureResource(Base):
     )
 
     project: Mapped["Project"] = relationship(back_populates="resources")
+    incidents: Mapped[list["Incident"]] = relationship(back_populates="resource")
